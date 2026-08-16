@@ -8,6 +8,9 @@ import joblib
 import nltk
 from bs4 import BeautifulSoup
 from collections import Counter
+from nltk.stem import PorterStemmer
+
+stemmer = PorterStemmer()
 
 # Download required NLTK resources if missing
 try:
@@ -417,6 +420,60 @@ def query_google_news(search_query, limit=8, diagnostic_info=None):
         log(f"Google News RSS: Failed to fetch query '{search_query}': {e}")
         return []
 
+def query_wikipedia(search_query, limit=5, diagnostic_info=None):
+    """
+    Fetches Wikipedia page extracts as evidence articles for verification.
+    """
+    def log(msg):
+        if diagnostic_info is not None:
+            diagnostic_info.append(msg)
+        print(msg)
+
+    if not search_query.strip():
+        log("Wikipedia: Empty search query.")
+        return []
+
+    log(f"Wikipedia: Searching for '{search_query}'")
+    search_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={requests.utils.quote(search_query)}&format=json&origin=*"
+    
+    headers = {
+        "User-Agent": "NewsVerifierBot/1.0 (contact@newsverifier.org)"
+    }
+    
+    results = []
+    try:
+        response = requests.get(search_url, headers=headers, timeout=5)
+        log(f"Wikipedia: Search API response code {response.status_code}")
+        response.raise_for_status()
+        
+        data = response.json()
+        search_items = data.get("query", {}).get("search", [])
+        log(f"Wikipedia: Found {len(search_items)} search results.")
+        
+        for item in search_items[:limit]:
+            title = item["title"]
+            encoded_title = requests.utils.quote(title.replace(" ", "_"))
+            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_title}"
+            
+            log(f"Wikipedia: Fetching summary for '{title}' from REST API")
+            sum_resp = requests.get(summary_url, headers=headers, timeout=5)
+            if sum_resp.status_code == 200:
+                sum_data = sum_resp.json()
+                extract = sum_data.get("extract", "")
+                if extract:
+                    results.append({
+                        "title": sum_data.get("title", title),
+                        "description": extract,
+                        "link": sum_data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                        "source": "Wikipedia",
+                        "pub_date": "Wikipedia Fact",
+                        "text": extract
+                    })
+    except Exception as e:
+        log(f"Wikipedia API error: {e}")
+        
+    return results
+
 def deduplicate_articles(articles):
     """
     Filters out near-duplicate/re-syndicated articles using title word overlaps.
@@ -505,15 +562,76 @@ ACTION_SYNONYMS = {
     "confirms": ["confirm", "confirms", "confirmed", "verify", "verified"],
 }
 
-def action_matches(claim_action, text_lower):
-    if not claim_action:
+def contains_action(action, text_lower):
+    if not action:
         return True
-    action_clean = claim_action.lower().strip()
+    action_clean = action.lower().strip()
+    if action_clean in ["is", "was", "are", "were", "be", "been", "do", "did", "done", "make", "made", "perform", "performed", "carry", "carried", "conduct", "conducted", "execute", "executed", "implement", "implemented", "has", "have", "had"]:
+        return True
+        
     synonyms = ACTION_SYNONYMS.get(action_clean, [action_clean])
-    for syn in synonyms:
-        if re.search(r'\b' + re.escape(syn) + r'\b', text_lower):
+    syn_stems = {stemmer.stem(syn) for syn in synonyms}
+    
+    words = re.findall(r'[a-zA-Z0-9]+', text_lower)
+    for w in words:
+        if stemmer.stem(w) in syn_stems:
             return True
     return False
+
+COMMON_START_WORDS = {
+    "the", "a", "an", "on", "in", "at", "this", "that", "these", "those",
+    "it", "they", "he", "she", "we", "you", "i", "there", "here", "after",
+    "before", "when", "while", "during", "although", "though", "but", "and",
+    "or", "if", "unless", "since", "because", "as", "until", "for", "with",
+    "by", "about", "from", "to", "under", "over", "through", "between",
+    "among", "against", "initially", "eventually", "recently", "currently",
+    "yesterday", "today", "tomorrow", "suddenly", "normally", "usually",
+    "previously", "lastly", "finally", "subsequently", "meanwhile", "now",
+    "then", "historically", "formerly", "originally", "primarily", "secondly",
+    "thirdly", "actually", "basically", "generally", "specifically",
+    "additionally", "moreover", "furthermore", "however", "therefore", "thus",
+    "hence", "instead", "otherwise", "nevertheless", "nonetheless", "first",
+    "second", "third", "company", "facility", "organization", "person",
+    "individual", "people", "man", "woman", "player", "actor", "president",
+    "minister", "spokesman", "spokesperson", "representative", "firm"
+}
+
+def has_competing_named_entity(sent, claim_text):
+    words = re.findall(r'\b[a-zA-Z0-9]+\b', sent)
+    if not words:
+        return False
+        
+    start_idx = 0
+    # If the first word is a common start word, skip it
+    if words[0].lower() in COMMON_START_WORDS:
+        start_idx = 1
+        
+    claim_words_lower = set(re.findall(r'\b[a-zA-Z0-9]+\b', claim_text.lower()))
+    
+    for idx in range(start_idx, len(words)):
+        w = words[idx]
+        if w and w[0].isupper():
+            # It's a capitalized word. Is it in the claim?
+            if w.lower() not in claim_words_lower:
+                # Yes! It is not in the claim, so it's a competing named entity!
+                return True
+    return False
+
+def get_action_index(action, text_lower):
+    if not action:
+        return -1
+    action_clean = action.lower().strip()
+    synonyms = ACTION_SYNONYMS.get(action_clean, [action_clean])
+    syn_stems = {stemmer.stem(syn) for syn in synonyms}
+    
+    words = re.finditer(r'\b[a-zA-Z0-9]+\b', text_lower)
+    for m in words:
+        if stemmer.stem(m.group(0)) in syn_stems:
+            return m.start()
+    return -1
+
+def action_matches(claim_action, text_lower):
+    return contains_action(claim_action, text_lower)
 
 def factual_tokens(text):
     """
@@ -571,6 +689,9 @@ def get_relevant_evidence_sentences(claim_struct, full_text):
     except Exception:
         raw_sentences = re.split(r'(?<=[.!?])\s+', full_text)
         
+    if len(raw_sentences) <= 6:
+        return [s.strip() for s in raw_sentences if s.strip()]
+        
     relevant = []
     subject = claim_struct.get("subject", "").lower()
     action = claim_struct.get("action", "").lower()
@@ -595,13 +716,18 @@ def get_relevant_evidence_sentences(claim_struct, full_text):
     if location:
         key_terms.add(location)
         
+    key_stems = {stemmer.stem(term) for term in key_terms}
+    
     for sent in raw_sentences:
         sent_clean = sent.strip()
         if not sent_clean or len(sent_clean) < 10:
             continue
         sent_lower = sent_clean.lower()
         
-        match_count = sum(1 for term in key_terms if re.search(r'\b' + re.escape(term) + r'\b', sent_lower))
+        sent_words = re.findall(r'\b[a-zA-Z0-9]+\b', sent_lower)
+        sent_stems = {stemmer.stem(w) for w in sent_words}
+        
+        match_count = sum(1 for stem in key_stems if stem in sent_stems)
         act_match = action_matches(action, sent_lower) if action else True
         
         if match_count >= 2 or (match_count >= 1 and act_match):
@@ -663,15 +789,13 @@ def extract_event_date(claim_struct, relevant_sentences, full_text):
     location = claim_struct.get("location", "").lower() if claim_struct.get("location") else ""
     entities = [e.lower() for e in claim_struct.get("entities", []) if e.lower() != subject]
     
-    synonyms = ACTION_SYNONYMS.get(action, [action]) if action else []
-    
     best_candidate = None
     best_score = -1000
     
     for sent in sentences_to_check:
         sent_lower = sent.lower()
         has_subj_in_sent = bool(subject and subject in sent_lower)
-        has_action_in_sent = any(re.search(r'\b' + re.escape(syn) + r'\b', sent_lower) for syn in synonyms) if synonyms else False
+        has_action_in_sent = contains_action(action, sent_lower) if action else False
         
         clauses = re.split(r'\.\.\.|\.|\n|;|\band\b|\bwhile\b|\bafter\b|\bbefore\b', sent)
         for clause in clauses:
@@ -684,7 +808,7 @@ def extract_event_date(claim_struct, relevant_sentences, full_text):
                 score = 0
                 year_pos = clause_lower.find(year)
                 
-                has_action_in_clause = any(re.search(r'\b' + re.escape(syn) + r'\b', clause_lower) for syn in synonyms) if synonyms else False
+                has_action_in_clause = contains_action(action, clause_lower) if action else False
                 has_subj = has_subj_in_sent or bool(subject and subject in clause_lower)
                 has_obj = bool(obj and any(w in clause_lower for w in obj.split() if len(w) > 3))
                 has_loc = bool(location and location in clause_lower) or any(e in clause_lower for e in entities)
@@ -706,14 +830,10 @@ def extract_event_date(claim_struct, relevant_sentences, full_text):
                     score += 30
                     
                 if has_action_in_clause:
-                    min_dist = 999
-                    for syn in synonyms:
-                        syn_idx = clause_lower.find(syn)
-                        if syn_idx != -1:
-                            dist = abs(year_pos - syn_idx)
-                            if dist < min_dist:
-                                min_dist = dist
-                    score += max(0, 50 - min_dist)
+                    syn_idx = get_action_index(action, clause_lower)
+                    if syn_idx != -1:
+                        dist = abs(year_pos - syn_idx)
+                        score += max(0, 50 - dist)
                     
                 if score > best_score:
                     best_score = score
@@ -765,11 +885,10 @@ def extract_event_location(claim_struct, relevant_sentences, full_text):
             clauses = re.split(r'\.\.\.|\.|\n|;|,|(?<!\d)\band\b(?!\s*\d)', sent)
             for clause in clauses:
                 clause_lower = clause.lower()
-                # Use action synonyms for matching
-                action_synonyms = ACTION_SYNONYMS.get(action, [action])
-                if any(re.search(r'\b' + re.escape(syn) + r'\b', clause_lower) for syn in action_synonyms):
-                    act_match = next((re.search(r'\b' + re.escape(syn) + r'\b', clause_lower) for syn in action_synonyms if re.search(r'\b' + re.escape(syn) + r'\b', clause_lower)), None)
-                    act_pos = act_match.start() if act_match else 0
+                if contains_action(action, clause_lower):
+                    act_pos = get_action_index(action, clause_lower)
+                    if act_pos == -1:
+                        act_pos = 0
                     
                     for city in cities:
                         m = re.search(r'\b' + re.escape(city) + r'\b', clause_lower)
@@ -887,14 +1006,10 @@ def detect_role_reversal(claim_struct, relevant_sentences, full_text):
             obj_idx = sent_lower.find(o_term)
             sub_idx = sent_lower.find(s_term)
             if obj_idx < sub_idx:
-                if action and action_matches(action, sent_lower):
-                    act_idx = sent_lower.find(action)
-                    if obj_idx < act_idx < sub_idx:
+                if action:
+                    act_idx = get_action_index(action, sent_lower)
+                    if act_idx != -1 and obj_idx < act_idx < sub_idx:
                         return True
-                    for syn in ACTION_SYNONYMS.get(action, []):
-                        syn_idx = sent_lower.find(syn)
-                        if obj_idx < syn_idx < sub_idx:
-                            return True
                     if "by" not in sent_lower:
                         return True
                 elif any(verb in sent_lower for verb in ["attacked", "struck", "hit", "launched"]):
@@ -1030,9 +1145,9 @@ EVENT_STATES = {
     "UNDER_CONSTRUCTION": ["under construction", "constructing", "construction of", "building"],
     "CANCELLED": ["cancelled", "canceled", "abandoned", "scrapped"],
     "PLANNED": ["plans", "will", "expects", "aims", "intends", "scheduled", "planning"],
-    "PROPOSAL": ["proposed", "considering", "considered", "discussing"],
+    "PROPOSAL": ["proposed", "considering", "considered", "discussing", "discussed", "discuss", "talks"],
     "ANNOUNCEMENT": ["announced", "said", "revealed", "stated"],
-    "COMPLETED": ["opened", "open", "opens", "launched", "launched", "completed", "became operational", "inaugurated", "went live", "agreed", "signed"]
+    "COMPLETED": ["opened", "open", "opens", "launched", "completed", "became operational", "inaugurated", "went live", "agreed", "signed", "invested", "invests", "spent"]
 }
 
 def classify_event_state(sentence):
@@ -1045,7 +1160,7 @@ def classify_event_state(sentence):
 
 def are_event_states_compatible(claim_state, evidence_state, text_lower=""):
     if claim_state == "COMPLETED":
-        completed_verbs = {"opened", "launched", "inaugurated", "went live", "became operational", "completed", "agreed", "signed"}
+        completed_verbs = {"opened", "launched", "inaugurated", "went live", "became operational", "completed", "agreed", "signed", "invested", "invests", "spent"}
         has_completed_verb = any(re.search(r'\b' + re.escape(v) + r'\b', text_lower) for v in completed_verbs)
         
         if evidence_state in ["UNDER_CONSTRUCTION", "PLANNED", "PROPOSAL"] and not has_completed_verb:
@@ -1268,28 +1383,30 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
     
     for idx, art in enumerate(articles[:6]):
         url = art["link"]
-        scraped_text = ""
+        scraped_text = art.get("text", "")
         log(f"Article [{idx+1}]: Source: '{art.get('source')}', Title: '{art.get('title')}'")
         log(f"  URL: {url}")
         
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8",
-                "Connection": "close"
-            }
-            response = requests.get(url, headers=headers, timeout=5)
-            log(f"  Scrape HTTP Status: {response.status_code}")
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                paragraphs = [p.get_text().strip() for p in soup.find_all("p")]
-                scraped_text = " ".join([p for p in paragraphs if p])
-        except Exception:
-            pass
+        if not scraped_text:
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8",
+                    "Connection": "close"
+                }
+                response = requests.get(url, headers=headers, timeout=5)
+                log(f"  Scrape HTTP Status: {response.status_code}")
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, "html.parser")
+                    paragraphs = [p.get_text().strip() for p in soup.find_all("p")]
+                    scraped_text = " ".join([p for p in paragraphs if p])
+            except Exception:
+                pass
             
         evidence_corpus = art.get("title", "") + ". " + art.get("description", "")
-        if scraped_text:
+        if scraped_text and scraped_text.strip() != art.get("description", "").strip():
             evidence_corpus += ". " + scraped_text
+        evidence_corpus = re.sub(r'\s*\.+\s*', '. ', evidence_corpus)
             
         evidence_corpus_lower = evidence_corpus.lower()
         src_weight = calculate_source_quality(art.get("source", ""))
@@ -1349,6 +1466,14 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
         relevant_corpus = " ".join(relevant_sentences) if relevant_sentences else evidence_corpus
         relevant_corpus_lower = relevant_corpus.lower()
         
+        def get_normalized_stems(text):
+            words = re.findall(r'\b[a-zA-Z0-9]+\b', text.lower())
+            stems = set()
+            for w in words:
+                w_norm = w.replace('z', 's').replace('our', 'or')
+                stems.add(stemmer.stem(w_norm))
+            return stems
+
         # EVENT RELEVANCE ANALYSIS (Multi-signal Event Identity matching)
         subject_match = 0.0
         if claim_subject:
@@ -1358,6 +1483,13 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
                 subj_parts = [p for p in claim_subject.split() if len(p) > 3]
                 if subj_parts and any(p in relevant_corpus_lower for p in subj_parts):
                     subject_match = 0.5
+                else:
+                    claim_subject_stems = get_normalized_stems(claim_subject)
+                    evidence_stems = get_normalized_stems(relevant_corpus_lower)
+                    if claim_subject_stems and claim_subject_stems.issubset(evidence_stems):
+                        subject_match = 1.0
+                    elif claim_subject_stems and any(s in evidence_stems for s in claim_subject_stems):
+                        subject_match = 0.5
                     
         predicate_match = 0.0
         if claim_action:
@@ -1372,6 +1504,13 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
                 obj_parts = [p for p in claim_object.split() if len(p) > 3]
                 if obj_parts and any(p in relevant_corpus_lower for p in obj_parts):
                     object_match = 0.5
+                else:
+                    claim_obj_stems = get_normalized_stems(claim_object)
+                    evidence_stems = get_normalized_stems(relevant_corpus_lower)
+                    if claim_obj_stems and claim_obj_stems.issubset(evidence_stems):
+                        object_match = 1.0
+                    elif claim_obj_stems and any(s in evidence_stems for s in claim_obj_stems):
+                        object_match = 0.5
                     
         entity_match = 1.0
         claim_orgs = [o.lower() for o in claim_struct.get("organizations", [])]
@@ -1404,6 +1543,10 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
                                 0.10 * entity_match + \
                                 0.10 * context_overlap + \
                                 0.20 * relationship_match
+                                
+        # Object Gate: if claim has an object, the evidence must mention it
+        if claim_object and object_match == 0.0:
+            event_relevance_score = 0.0
                                 
         # Crucial topics gate
         for topic in crucial_topics:
@@ -1635,9 +1778,27 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
                 has_sub_act_cooccurrence = False
                 for sent in relevant_sentences:
                     sent_lower = sent.lower()
-                    if claim_subject in sent_lower and any(re.search(r'\b' + re.escape(syn) + r'\b', sent_lower) for syn in ACTION_SYNONYMS.get(claim_action, [claim_action])):
+                    if claim_subject in sent_lower and contains_action(claim_action, sent_lower):
                         has_sub_act_cooccurrence = True
                         break
+                if not has_sub_act_cooccurrence:
+                    try:
+                        raw_sents = nltk.sent_tokenize(evidence_corpus)
+                    except Exception:
+                        raw_sents = re.split(r'(?<=[.!?])\s+', evidence_corpus)
+                    for i in range(len(raw_sents) - 1):
+                        combined_sent = raw_sents[i].lower() + " " + raw_sents[i+1].lower()
+                        if claim_subject in combined_sent and contains_action(claim_action, combined_sent):
+                            # Ensure no competing named entities in the sentence that doesn't mention the subject
+                            competing_found = False
+                            for s in (raw_sents[i], raw_sents[i+1]):
+                                if claim_subject.lower() not in s.lower():
+                                    if has_competing_named_entity(s, claim_struct.get("text", "")):
+                                        competing_found = True
+                                        break
+                            if not competing_found:
+                                has_sub_act_cooccurrence = True
+                                break
             
             if ((context_overlap >= 0.25 and sub_ok and act_ok and loc_ok) or (context_overlap >= 0.35 and act_ok)) and has_sub_act_cooccurrence:
                 log("  -> Supporting article found.")
@@ -1750,24 +1911,46 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
             has_claim_numbers = len(claim_numbers) > 0
             numbers_validated = False
             if has_claim_numbers:
+                # Normalize claim numbers once
+                for num in claim_numbers:
+                    c_val = num.get("value", 0.0)
+                    c_unit = num.get("unit", "").lower()
+                    c_scale = 1.0
+                    if c_unit in ["billion", "b"]:
+                        c_scale = 1e9
+                    elif c_unit in ["million", "m"]:
+                        c_scale = 1e6
+                    elif c_unit in ["trillion"]:
+                        c_scale = 1e12
+                    num["scale"] = c_scale
+                    num["normalized_val"] = c_val * c_scale
+
+                claim_state = classify_event_state(claim_struct.get("text", ""))
                 for art in supporting_sources:
-                    evidence_text = art["title"] + " " + art["description"]
-                    ev_numbers = parse_factual_numbers(evidence_text)
+                    art_text = art.get("title", "") + ". " + art.get("description", "")
+                    if art.get("text") and art.get("text").strip() != art.get("description", "").strip():
+                        art_text += ". " + art.get("text")
+                    try:
+                        import nltk
+                        art_sents = nltk.sent_tokenize(art_text)
+                    except Exception:
+                        art_sents = re.split(r'(?<=[.!?])\s+', art_text)
+                        
                     all_nums_found = True
                     for num in claim_numbers:
-                        c_val = num.get("value", 0.0)
-                        c_unit = num.get("unit", "").lower()
-                        c_scale = 1.0
-                        if c_unit in ["billion", "b"]:
-                            c_scale = 1e9
-                        elif c_unit in ["million", "m"]:
-                            c_scale = 1e6
-                        elif c_unit in ["trillion"]:
-                            c_scale = 1e12
-                        num["scale"] = c_scale
-                        num["normalized_val"] = c_val * c_scale
-                        
-                        if not any(numbers_match(num, ev_num) for ev_num in ev_numbers):
+                        num_match_in_art = False
+                        for sent in art_sents:
+                            sent_nums = parse_factual_numbers(sent)
+                            for s_num in sent_nums:
+                                if numbers_match(num, s_num):
+                                    sent_state = classify_event_state(sent)
+                                    comp, _ = are_event_states_compatible(claim_state, sent_state, sent.lower())
+                                    if comp:
+                                        num_match_in_art = True
+                                        break
+                            if num_match_in_art:
+                                break
+                        if not num_match_in_art:
                             all_nums_found = False
                             break
                     if all_nums_found:

@@ -1436,5 +1436,23 @@ class NewsVerificationTestCase(unittest.TestCase):
         res = verify_claim_against_evidence(struct, mock_articles)
         self.assertEqual(res["verdict"], "VERIFIED")
 
+    @patch("requests.get")
+    def test_GEN21_morphological_verb_matching(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Why do India and Pakistan celebrate Independence Day one day apart?</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "India celebrates its independence day at 15 august"
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "August 14 vs August 15: Why India and Pakistan celebrate independence a day apart",
+            "link": "https://gen21",
+            "source": "Firstpost",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Why do Pakistan and India celebrate Independence Day one day apart?"
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
 if __name__ == "__main__":
     unittest.main()

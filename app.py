@@ -50,13 +50,13 @@ def main():
                     seen_links = set()
                     
                     for q in queries[:4]:
-                        fetched = verifier.query_google_news(q, limit=5, diagnostic_info=diagnostics)
+                        fetched = verifier.query_wikipedia(q, limit=5, diagnostic_info=diagnostics)
                         for art in fetched:
                             if art["link"] not in seen_links:
                                 seen_links.add(art["link"])
                                 all_articles.append(art)
                                 
-                    diagnostics.append(f"Retrieved {len(all_articles)} unique articles from RSS search queries.")
+                    diagnostics.append(f"Retrieved {len(all_articles)} unique articles from Wikipedia search queries.")
                     
                     # Deduplicate and rank relevance
                     deduped = verifier.deduplicate_articles(all_articles)
