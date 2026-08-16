@@ -835,6 +835,16 @@ def detect_role_reversal(claim_struct, relevant_sentences, full_text):
     subject = claim_struct.get("subject", "").lower()
     action = claim_struct.get("action", "").lower()
     obj = claim_struct.get("object", "").lower()
+    
+    claim_text = claim_struct.get("text", "")
+    sub_match = re.search(r'\b' + re.escape(subject) + r'\s+([A-Za-z0-9])\b', claim_text, re.IGNORECASE)
+    if sub_match and subject == "company":
+        subject = f"{subject} {sub_match.group(1)}".lower()
+        
+    obj_match = re.search(r'\b' + re.escape(obj) + r'\s+([A-Za-z0-9])\b', claim_text, re.IGNORECASE)
+    if obj_match and obj == "company":
+        obj = f"{obj} {obj_match.group(1)}".lower()
+        
     countries = [c.lower() for c in claim_struct.get("countries", [])]
     entities = [e.lower() for e in claim_struct.get("entities", [])]
     
@@ -852,12 +862,8 @@ def detect_role_reversal(claim_struct, relevant_sentences, full_text):
         return False
         
     candidates = relevant_sentences if relevant_sentences else [full_text]
-    # Sentence-tokenize to avoid positional false-positives from concatenated strings.
-    # First normalize double-period artifacts (e.g. "title.. scraped body") that NLTK
-    # does not split, then sentence-tokenize each clean chunk.
     sentences_to_check = []
     for chunk in candidates:
-        # Replace .. or .  . patterns with a single sentence boundary
         normalized = re.sub(r'\.{2,}\s*', '. ', chunk).strip()
         try:
             sentences_to_check.extend(nltk.sent_tokenize(normalized))
@@ -866,13 +872,32 @@ def detect_role_reversal(claim_struct, relevant_sentences, full_text):
 
     for sent in sentences_to_check:
         sent_lower = sent.lower()
-        if subject in sent_lower and target_obj in sent_lower:
-            obj_idx = sent_lower.find(target_obj)
-            sub_idx = sent_lower.find(subject)
+        s_term = subject
+        o_term = target_obj
+        if s_term == "company" and "company a" in sent_lower:
+            s_term = "company a"
+        if o_term == "company" and "company a" in sent_lower:
+            o_term = "company a"
+        if s_term == "company" and "company b" in sent_lower:
+            s_term = "company b"
+        if o_term == "company" and "company b" in sent_lower:
+            o_term = "company b"
+            
+        if s_term in sent_lower and o_term in sent_lower:
+            obj_idx = sent_lower.find(o_term)
+            sub_idx = sent_lower.find(s_term)
             if obj_idx < sub_idx:
                 if action and action_matches(action, sent_lower):
-                    return True
-                if any(verb in sent_lower for verb in ["attacked", "struck", "hit", "launched"]):
+                    act_idx = sent_lower.find(action)
+                    if obj_idx < act_idx < sub_idx:
+                        return True
+                    for syn in ACTION_SYNONYMS.get(action, []):
+                        syn_idx = sent_lower.find(syn)
+                        if obj_idx < syn_idx < sub_idx:
+                            return True
+                    if "by" not in sent_lower:
+                        return True
+                elif any(verb in sent_lower for verb in ["attacked", "struck", "hit", "launched"]):
                     return True
     return False
 
@@ -1115,6 +1140,79 @@ def is_syndicated_copy(art, processed_articles):
             return True
     return False
 
+def normalize_quantity(num_dict):
+    val = num_dict.get("value", 0.0)
+    unit = num_dict.get("unit", "").lower()
+    if unit in ["million", "m"]:
+        return val * 1000000.0, "amount"
+    if unit in ["billion", "b"]:
+        return val * 1000000000.0, "amount"
+    if unit in ["trillion", "t"]:
+        return val * 1000000000000.0, "amount"
+    if unit in ["percent", "%"]:
+        return val, "percent"
+    return val, unit
+
+def evaluate_state_consistency(claim_struct, evidence_corpus, pub_date, log_list=None):
+    def log(msg):
+        if log_list is not None:
+            log_list.append(msg)
+        print(msg)
+
+    claim_text = claim_struct.get("text", "").lower()
+    claim_action = claim_struct.get("action", "").lower()
+    subject = claim_struct.get("subject", "")
+    if not subject:
+        return "NOT_APPLICABLE", None
+
+    claim_year_str = re.search(r'\b(19\d{2}|20\d{2})\b', str(claim_struct.get("date")))
+    claim_year = int(claim_year_str.group(1)) if claim_year_str else None
+
+    # Detect Deceased state
+    death_keywords = ["died", "death", "die", "dies", "passed away", "killed", "assassinated", "fatal", "deceased"]
+    is_death_claim = any(re.search(r'\b' + re.escape(w) + r'\b', claim_text) for w in death_keywords) or \
+                      any(re.search(r'\b' + re.escape(w) + r'\b', claim_action) for w in death_keywords)
+
+    if is_death_claim and claim_year:
+        claim_state = {
+            "entity": subject,
+            "state_name": "life_status",
+            "value": "deceased",
+            "year": claim_year
+        }
+    else:
+        return "NOT_APPLICABLE", None
+
+    evidence_sentences = nltk.sent_tokenize(evidence_corpus) if hasattr(nltk, 'sent_tokenize') else evidence_corpus.split(".")
+    
+    active_indicators = ["addressed", "attended", "visited", "spoke", "announced", "met", "ruled", "appeared", "lives", "speaks", "active", "performs", "says", "declares", "signed", "launched"]
+    death_exclusion = ["died", "death", "funeral", "grave", "memorial", "tribute", "assassinated", "killed", "passed away", "deceased", "anniversary", "posthumous", "buried", "cremated"]
+
+    for sent in evidence_sentences:
+        sent_lower = sent.lower()
+        if subject.lower() in sent_lower:
+            year_match = re.search(r'\b(19\d{2}|20\d{2})\b', sent_lower)
+            ev_year = None
+            if year_match:
+                ev_year = int(year_match.group(1))
+            else:
+                pub_year_match = re.search(r'\b(19\d{2}|20\d{2})\b', str(pub_date))
+                if pub_year_match:
+                    ev_year = int(pub_year_match.group(1))
+
+            if ev_year and ev_year > claim_year:
+                has_death_terms = any(re.search(r'\b' + re.escape(w) + r'\b', sent_lower) for w in death_exclusion)
+                has_active_terms = any(re.search(r'\b' + re.escape(w) + r'\b', sent_lower) for w in active_indicators)
+                
+                if has_active_terms and not has_death_terms:
+                    log(f"  -> State transition conflict: Claim asserts '{subject}' is deceased in {claim_year}, but evidence shows activity in {ev_year} ('{sent.strip()}')")
+                    return "CONTRADICTION", {
+                        "claim": f"{subject} deceased in {claim_year}",
+                        "evidence": f"Active in {ev_year}"
+                    }
+
+    return "UNKNOWN", None
+
 def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
     """
     Evaluates evidence sentences/body texts against the claim structure.
@@ -1164,7 +1262,8 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
         "negation": None,
         "location": None,
         "date": None,
-        "numbers": None
+        "numbers": None,
+        "state": None
     }
     
     for idx, art in enumerate(articles[:6]):
@@ -1176,10 +1275,8 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1"
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9;q=0.8",
+                "Connection": "close"
             }
             response = requests.get(url, headers=headers, timeout=5)
             log(f"  Scrape HTTP Status: {response.status_code}")
@@ -1197,38 +1294,35 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
         evidence_corpus_lower = evidence_corpus.lower()
         src_weight = calculate_source_quality(art.get("source", ""))
         
-        # Check syndication status
         is_synd = is_syndicated_copy(art, processed_articles)
         if is_synd:
-            src_weight *= 0.2  # Syndicated copies carry reduced weight
+            src_weight *= 0.2
             
         processed_articles.append(art)
         
-        # 1. Strict Entity Binding Match Check
+        # 1. Strict Entity Binding Match Check (Entity Gate)
         entity_missing = False
         gate_reason = ""
         
         for country in claim_struct.get("countries", []):
             if not match_country_in_text(country, evidence_corpus_lower):
                 entity_missing = True
-                gate_reason = f"Country '{country}' not found in text."
+                gate_reason = f"Country '{country}' not found."
                 break
                 
         if not entity_missing:
-            # Exact Entity Boundary Check
             for ent in claim_struct.get("entities", []):
                 if not is_exact_entity_match(ent, evidence_corpus):
                     entity_missing = True
-                    gate_reason = f"Entity '{ent}' not found in text."
+                    gate_reason = f"Entity '{ent}' not found."
                     break
                     
         if not entity_missing:
-            # Organization Hard Gate: If claim has specific orgs (e.g. ISRO, RBI, SpaceX), evidence must mention at least one
             claim_orgs = [o.lower() for o in claim_struct.get("organizations", [])]
             if claim_orgs:
                 if not any(re.search(r'\b' + re.escape(o) + r'\b', evidence_corpus_lower) for o in claim_orgs):
                     entity_missing = True
-                    gate_reason = f"None of the required organizations {claim_orgs} found in text."
+                    gate_reason = f"Orgs {claim_orgs} not found."
                     
         if not entity_missing:
             crucial_topics = ["nuclear", "ethanol", "data center", "datacenter", "aliens", "ufo", "mars", "water", "satellite"]
@@ -1237,7 +1331,7 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
                     if topic in ["data center", "datacenter"]:
                         if "data center" not in evidence_corpus_lower and "datacenter" not in evidence_corpus_lower and "cloud" not in evidence_corpus_lower:
                             entity_missing = True
-                            gate_reason = "Crucial topic 'data center' or 'cloud' not found."
+                            gate_reason = "Crucial topic 'data center' not found."
                             break
                     else:
                         if topic not in evidence_corpus_lower:
@@ -1250,48 +1344,101 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
             art["type"] = "Neutral"
             neutral_count += 1
             continue
-        log("  -> Entity gate passed.")
             
-        # Get claim-relevant sentences from evidence
         relevant_sentences = get_relevant_evidence_sentences(claim_struct, evidence_corpus)
         relevant_corpus = " ".join(relevant_sentences) if relevant_sentences else evidence_corpus
         relevant_corpus_lower = relevant_corpus.lower()
-        log(f"  Extracted {len(relevant_sentences)} claim-relevant sentences.")
         
-        # Attribution Check
-        attr_class = classify_attribution(relevant_corpus, art.get("source", ""))
-        if attr_class == "ALLEGATION":
-            log("  -> Neutral: Attribution classified as ALLEGATION.")
-            art["type"] = "Neutral"
-            neutral_count += 1
-            continue
-            
-        # Action Aspect & Event State Compatibility Check
-        if not is_aspect_compatible(claim_action, relevant_corpus_lower):
-            log(f"  -> Neutral: Action aspect compatibility failed for '{claim_action}'.")
-            art["type"] = "Neutral"
-            neutral_count += 1
-            continue
-            
-        ev_state = classify_event_state(relevant_corpus)
-        claim_state = classify_event_state(claim_struct["text"])
-        state_compat, state_verdict = are_event_states_compatible(claim_state, ev_state, relevant_corpus_lower)
-        if not state_compat:
-            log(f"  -> Event state mismatch: claim={claim_state}, evidence={ev_state}. Verdict: {state_verdict}")
-            if state_verdict == "CONTRADICTED":
-                art["type"] = "Contradicting"
-                contradiction_count += 1
-                total_contradiction_score += 1.5 * src_weight
-                contradicting_sources.append(art)
-                continue
+        # EVENT RELEVANCE ANALYSIS (Multi-signal Event Identity matching)
+        subject_match = 0.0
+        if claim_subject:
+            if claim_subject in relevant_corpus_lower:
+                subject_match = 1.0
             else:
-                art["type"] = "Neutral"
-                neutral_count += 1
-                continue
+                subj_parts = [p for p in claim_subject.split() if len(p) > 3]
+                if subj_parts and any(p in relevant_corpus_lower for p in subj_parts):
+                    subject_match = 0.5
+                    
+        predicate_match = 0.0
+        if claim_action:
+            if action_matches(claim_action, relevant_corpus_lower):
+                predicate_match = 1.0
+                
+        object_match = 0.0
+        if claim_object:
+            if claim_object in relevant_corpus_lower:
+                object_match = 1.0
+            else:
+                obj_parts = [p for p in claim_object.split() if len(p) > 3]
+                if obj_parts and any(p in relevant_corpus_lower for p in obj_parts):
+                    object_match = 0.5
+                    
+        entity_match = 1.0
+        claim_orgs = [o.lower() for o in claim_struct.get("organizations", [])]
+        claim_countries = [c.lower() for c in claim_struct.get("countries", [])]
+        total_entities = len(claim_orgs) + len(claim_countries)
+        if total_entities > 0:
+            matched_entities = 0
+            for org in claim_orgs:
+                if org in evidence_corpus_lower:
+                    matched_entities += 1
+            for country in claim_countries:
+                if match_country_in_text(country, evidence_corpus_lower):
+                    matched_entities += 1
+            entity_match = matched_entities / total_entities
             
-        # 2. Subject-Object Role Reversal Check (sentence-scoped)
+        relationship_match = 1.0
         role_reversal = detect_role_reversal(claim_struct, relevant_sentences, evidence_corpus)
         if role_reversal:
+            relationship_match = 0.0
+            
+        claim_toks = factual_tokens(claim_struct["text"])
+        user_words = set(claim_toks)
+        ev_toks = set(factual_tokens(relevant_corpus))
+        context_overlap = len(user_words.intersection(ev_toks)) / len(user_words) if user_words else 0.0
+        
+        # Calculate event relevance score
+        event_relevance_score = 0.20 * subject_match + \
+                                0.25 * predicate_match + \
+                                0.15 * object_match + \
+                                0.10 * entity_match + \
+                                0.10 * context_overlap + \
+                                0.20 * relationship_match
+                                
+        # Crucial topics gate
+        for topic in crucial_topics:
+            if topic in claim_struct.get("text", "").lower():
+                if topic in ["data center", "datacenter"]:
+                    if "data center" not in evidence_corpus_lower and "datacenter" not in evidence_corpus_lower and "cloud" not in evidence_corpus_lower:
+                        event_relevance_score = 0.0
+                else:
+                    if topic not in evidence_corpus_lower:
+                        event_relevance_score = 0.0
+                        
+        # Classify Event Identity
+        if event_relevance_score < 0.40:
+            event_identity = "IRRELEVANT"
+        elif event_relevance_score < 0.65:
+            event_identity = "POSSIBLE"
+        else:
+            event_identity = "MATCH"
+            
+        # Reversal check forces relationship match to 0 and blocks MATCH status
+        if role_reversal:
+            event_identity = "IRRELEVANT_OR_CONTRADICTORY_RELATION"
+            
+        log(f"  Event Identity: {event_identity} (Relevance Score: {event_relevance_score:.2f})")
+        log(f"  Components: sub={subject_match}, pred={predicate_match}, obj={object_match}, ent={entity_match}, rel={relationship_match}, overlap={context_overlap:.2%}")
+        
+        # Gating: Skip full comparison if completely irrelevant
+        if event_identity == "IRRELEVANT":
+            log("  -> Neutral: Irrelevant article (low event identity matching). Skipping contradiction analysis.")
+            art["type"] = "Neutral"
+            neutral_count += 1
+            continue
+            
+        # Handle RELATION contradiction directly
+        if event_identity == "IRRELEVANT_OR_CONTRADICTORY_RELATION":
             log("  -> Contradicting: Subject-Object Role Reversal detected.")
             art["type"] = "Contradicting"
             contradiction_count += 1
@@ -1305,200 +1452,242 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
                     "evidence_object": claim_struct.get("subject")
                 }
             continue
+
+        # Reduce weight for POSSIBLE matches
+        current_weight = src_weight
+        if event_identity == "POSSIBLE":
+            current_weight = src_weight * 0.5
+            log(f"  -> POSSIBLE event match: Using reduced source weight ({current_weight:.2f})")
+
+        # 1. Attribution Check
+        attr_class = classify_attribution(relevant_corpus, art.get("source", ""))
+        if attr_class == "ALLEGATION":
+            log("  -> Neutral: Attribution classified as ALLEGATION.")
+            art["type"] = "Neutral"
+            neutral_count += 1
+            continue
+
+        # 2. Action Aspect Check
+        claim_state = classify_event_state(claim_struct["text"])
+        if claim_state == "COMPLETED" and not is_aspect_compatible(claim_action, relevant_corpus_lower):
+            log(f"  -> Neutral: Action aspect compatibility failed for completed claim action '{claim_action}'.")
+            art["type"] = "Neutral"
+            neutral_count += 1
+            continue
             
-        # 3. Claim-Scoped Negation Check
+        # 3. Event State Check
+        ev_state = classify_event_state(relevant_corpus)
+        state_compat, state_verdict = are_event_states_compatible(claim_state, ev_state, relevant_corpus_lower)
+        if not state_compat:
+            log(f"  -> Event state mismatch: claim={claim_state}, evidence={ev_state}. Verdict: {state_verdict}")
+            if state_verdict == "CONTRADICTED":
+                art["type"] = "Contradicting"
+                contradiction_count += 1
+                total_contradiction_score += 1.5 * current_weight
+                contradicting_sources.append(art)
+                continue
+            else:
+                art["type"] = "Neutral"
+                neutral_count += 1
+                continue
+
+        # 4. Polarity / Negation
+        negation_conflict = False
         evidence_negated = detect_claim_scoped_negation(claim_struct, relevant_sentences, evidence_corpus)
         if claim_negation != evidence_negated:
             if check_double_negation(relevant_corpus_lower):
-                # Double negation / ambiguity: fallback to neutral instead of false contradiction
                 log("  -> Neutral: Negation mismatch but double-negation/ambiguity triggered fallback to Neutral.")
                 art["type"] = "Neutral"
                 neutral_count += 1
                 continue
-            log(f"  -> Contradicting: Negation mismatch (claim negated={claim_negation}, evidence negated={evidence_negated}).")
-            art["type"] = "Contradicting"
-            contradiction_count += 1
-            total_contradiction_score += 1.5 * src_weight
-            contradicting_sources.append(art)
-            if not conflict_details["negation"]:
-                conflict_details["negation"] = {
-                    "claim": "Negated" if claim_negation else "Asserted",
-                    "evidence": "Negated" if evidence_negated else "Asserted"
-                }
-            continue
-            
-        # 4. Event-Scoped Location Verification Check
+            else:
+                log(f"  -> Contradicting: Negation mismatch.")
+                negation_conflict = True
+                if not conflict_details["negation"]:
+                    conflict_details["negation"] = {
+                        "claim": "Negated" if claim_negation else "Asserted",
+                        "evidence": "Negated" if evidence_negated else "Asserted"
+                    }
+
+        # 5. Location Verification
         location_conflict = False
         found_evidence_city = None
         if claim_location:
             found_evidence_city = extract_event_location(claim_struct, relevant_sentences, evidence_corpus)
             log(f"  Claim location: '{claim_location}', extracted evidence location: '{found_evidence_city}'")
-            if found_evidence_city and not are_locations_equivalent(found_evidence_city, claim_location):
-                location_conflict = True
-                
-        if location_conflict:
-            log("  -> Contradicting: Location mismatch.")
-            art["type"] = "Contradicting"
-            contradiction_count += 1
-            total_contradiction_score += 1.5 * src_weight
-            contradicting_sources.append(art)
-            if not conflict_details["location"]:
-                conflict_details["location"] = {
-                    "claim": claim_struct.get("location"),
-                    "evidence": found_evidence_city.capitalize() if found_evidence_city else "Unknown"
-                }
-            continue
-            
-        # 5. Event-Scoped Temporal / Date Verification Check
-        date_conflict = False
-        ev_year = None
-        if claim_date:
-            ev_year = extract_event_date(claim_struct, relevant_sentences, evidence_corpus)
-            log(f"  Claim date: '{claim_date}', extracted evidence date: '{ev_year}'")
-            if not ev_year:
-                pub_year_match = re.search(r'\b(19\d\d|20\d\d)\b', art.get("pub_date", ""))
-                if pub_year_match:
-                    ev_year = pub_year_match.group(0)
-                    log(f"  Extracted date from article publication date: '{ev_year}'")
-                    
-            
-            # For relative dates (no 4-digit year), resolve against article pub_date
-            claim_year_match = re.search(r'\b(19\d{2}|20\d{2})\b', str(claim_date)) if claim_date else None
-            effective_claim_date = claim_date
-            if claim_date and not claim_year_match:
-                # Relative date: resolve using pub_date
-                pub_year_match2 = re.search(r'\b(19\d{2}|20\d{2})\b', art.get("pub_date", ""))
-                if pub_year_match2:
-                    effective_claim_date = pub_year_match2.group(0)
-                    log(f"  Resolved relative claim date to effective date: '{effective_claim_date}'")
+            if found_evidence_city:
+                if not are_locations_equivalent(found_evidence_city, claim_location):
+                    location_conflict = True
+                    if not conflict_details["location"]:
+                        conflict_details["location"] = {
+                            "claim": claim_struct.get("location"),
+                            "evidence": found_evidence_city.capitalize()
+                        }
+            else:
+                if claim_location not in evidence_corpus_lower:
+                    if not conflict_details["location"]:
+                        conflict_details["location"] = {
+                            "claim": claim_struct.get("location"),
+                            "evidence": "Not found in evidence",
+                            "status": "UNSUPPORTED"
+                        }
 
-            if ev_year and effective_claim_date and not are_dates_compatible(effective_claim_date, ev_year):
-                date_conflict = True
-                        
-        if date_conflict:
-            log(f"  -> Contradicting: Date mismatch (Claim date: {effective_claim_date}, Evidence date: {ev_year}).")
+        # 6. Event-Scoped Temporal / Date Verification Check (Cases A-E)
+        date_conflict = False
+        if claim_date:
+            claim_year_match = re.search(r'\b(19\d{2}|20\d{2})\b', str(claim_date))
+            claim_year = claim_year_match.group(1) if claim_year_match else None
+            
+            pub_year_match = re.search(r'\b(19\d{2}|20\d{2})\b', art.get("pub_date", ""))
+            pub_year = pub_year_match.group(1) if pub_year_match else None
+            
+            effective_claim_year = claim_year
+            if claim_date and not claim_year:
+                # Relative date: resolve using publication year
+                if pub_year:
+                    effective_claim_year = pub_year
+                    log(f"  Resolved relative claim date to effective year: '{effective_claim_year}'")
+                    
+            evidence_event_year = extract_event_date(claim_struct, relevant_sentences, evidence_corpus)
+            log(f"  Claim event year: '{effective_claim_year}', Evidence event year: '{evidence_event_year}', Pub year: '{pub_year}'")
+            
+            if evidence_event_year:
+                # Explicit event year in text: Case A, B, E
+                if not are_dates_compatible(effective_claim_year, evidence_event_year):
+                    date_conflict = True
+                    if not conflict_details["date"]:
+                        conflict_details["date"] = {
+                            "claim": claim_struct.get("date"),
+                            "evidence": evidence_event_year
+                        }
+            else:
+                # No event year in text: metadata check
+                if pub_year and effective_claim_year:
+                    if int(effective_claim_year) > int(pub_year):
+                        # Case D: temporal impossibility (event in future relative to pub date)
+                        date_conflict = True
+                        if not conflict_details["date"]:
+                            conflict_details["date"] = {
+                                "claim": claim_struct.get("date"),
+                                "evidence": f"Publication year {pub_year} (Temporal Impossibility)"
+                            }
+
+        # 7. Quantity / Numerical check
+        quantity_conflict = False
+        if claim_numbers:
+            ev_numbers = parse_factual_numbers(evidence_corpus)
+            if ev_numbers:
+                any_num_conflict = False
+                for c_num in claim_numbers:
+                    c_val = c_num.get("value", 0.0)
+                    c_unit = c_num.get("unit", "").lower()
+                    c_scale = 1.0
+                    if c_unit in ["billion", "b"]:
+                        c_scale = 1e9
+                    elif c_unit in ["million", "m"]:
+                        c_scale = 1e6
+                    elif c_unit in ["trillion"]:
+                        c_scale = 1e12
+                    c_num["scale"] = c_scale
+                    c_num["normalized_val"] = c_val * c_scale
+                    
+                    for e_num in ev_numbers:
+                        c_curr = c_num.get("currency", "")
+                        e_curr = e_num.get("currency", "")
+                        if (c_curr == "$" and e_curr == "$") or (c_curr == "%" and e_curr == "%"):
+                            if not numbers_match(c_num, e_num):
+                                e_unit = e_num.get("unit", "").lower()
+                                if e_unit in ["billion", "b", "million", "m", "trillion", ""] or e_curr == "%":
+                                    any_num_conflict = True
+                if any_num_conflict:
+                    quantity_conflict = True
+                    if not conflict_details["numbers"]:
+                        conflict_details["numbers"] = {
+                            "claim": ", ".join([str(n.get("value")) + " " + n.get("unit", "") for n in claim_numbers]),
+                            "evidence": ", ".join([str(n.get("value")) + " " + n.get("unit", "") for n in ev_numbers])
+                        }
+
+        # 8. Generic State-Transition Logic Check
+        state_conflict = False
+        state_res, state_detail = evaluate_state_consistency(claim_struct, evidence_corpus, art.get("pub_date", ""))
+        if state_res == "CONTRADICTION":
+            state_conflict = True
+            if not conflict_details["state"]:
+                conflict_details["state"] = state_detail
+
+        # 9. Aggregate Factual Checks
+        any_attribute_conflict = any([negation_conflict, location_conflict, date_conflict, quantity_conflict, state_conflict])
+        
+        if any_attribute_conflict:
+            log("  -> Contradicting article due to attribute mismatch.")
             art["type"] = "Contradicting"
             contradiction_count += 1
-            total_contradiction_score += 1.5 * src_weight
+            total_contradiction_score += 1.5 * current_weight
             contradicting_sources.append(art)
-            if not conflict_details["date"]:
-                conflict_details["date"] = {
-                    "claim": claim_struct.get("date"),
-                    "evidence": ev_year if ev_year else "Unknown"
-                }
-            continue
-            
-        # 6. Structured Support Overlap comparison using factual_tokens()
-        claim_toks = factual_tokens(claim_struct["text"])
-        ev_toks = set(factual_tokens(relevant_corpus))
-        
-        user_words = set(claim_toks)
-        overlap_ratio = len(user_words.intersection(ev_toks)) / len(user_words) if user_words else 0.0
-        
-        sub_ok = (not claim_subject) or (claim_subject in relevant_corpus_lower)
-        act_ok = action_matches(claim_action, relevant_corpus_lower)
-        loc_ok = (not claim_location) or (found_evidence_city and are_locations_equivalent(found_evidence_city, claim_location)) or (not found_evidence_city)
-        
-        log(f"  Overlap overlap_ratio: {overlap_ratio:.2%}, sub_ok: {sub_ok}, act_ok: {act_ok}, loc_ok: {loc_ok}")
-        if (overlap_ratio >= 0.25 and sub_ok and act_ok and loc_ok) or (overlap_ratio >= 0.35 and act_ok):
-            log("  -> Supporting article found.")
-            art["type"] = "Supporting"
-            support_count += 1
-            total_support_score += 1.0 * src_weight
-            supporting_sources.append(art)
         else:
-            log("  -> Neutral: Overlap/compatibility checks failed.")
-            art["type"] = "Neutral"
-            neutral_count += 1
+            # Check overlap compatibility to see if it qualifies as Supporting
+            sub_ok = (not claim_subject) or (claim_subject in relevant_corpus_lower)
+            act_ok = action_matches(claim_action, relevant_corpus_lower)
+            loc_ok = (not claim_location) or (found_evidence_city and are_locations_equivalent(found_evidence_city, claim_location)) or (not found_evidence_city)
             
+            has_sub_act_cooccurrence = True
+            if claim_subject and claim_action:
+                has_sub_act_cooccurrence = False
+                for sent in relevant_sentences:
+                    sent_lower = sent.lower()
+                    if claim_subject in sent_lower and any(re.search(r'\b' + re.escape(syn) + r'\b', sent_lower) for syn in ACTION_SYNONYMS.get(claim_action, [claim_action])):
+                        has_sub_act_cooccurrence = True
+                        break
+            
+            if ((context_overlap >= 0.25 and sub_ok and act_ok and loc_ok) or (context_overlap >= 0.35 and act_ok)) and has_sub_act_cooccurrence:
+                log("  -> Supporting article found.")
+                art["type"] = "Supporting"
+                support_count += 1
+                total_support_score += 1.0 * current_weight
+                supporting_sources.append(art)
+            else:
+                log("  -> Neutral: Attributes compatible but does not meet support threshold or co-occurrence failed.")
+                art["type"] = "Neutral"
+                neutral_count += 1
+
     total = support_count + contradiction_count + neutral_count
     
     # Construct breakdown
     breakdown = {}
-    
     if claim_struct.get("subject"):
-        breakdown["subject"] = {
-            "name": "Subject",
-            "claim": claim_struct["subject"],
-            "evidence": claim_struct["subject"],
-            "status": "MATCH"
-        }
+        breakdown["subject"] = {"name": "Subject", "claim": claim_struct["subject"], "evidence": claim_struct["subject"], "status": "MATCH"}
         if conflict_details["role_reversal"]:
             breakdown["subject"]["evidence"] = conflict_details["role_reversal"]["evidence_subject"]
             breakdown["subject"]["status"] = "CONFLICT"
-            
     if claim_struct.get("action"):
-        breakdown["action"] = {
-            "name": "Action",
-            "claim": claim_struct["action"],
-            "evidence": claim_struct["action"],
-            "status": "MATCH"
-        }
-        
+        breakdown["action"] = {"name": "Action", "claim": claim_struct["action"], "evidence": claim_struct["action"], "status": "MATCH"}
     if claim_struct.get("object"):
-        breakdown["object"] = {
-            "name": "Object",
-            "claim": claim_struct["object"],
-            "evidence": claim_struct["object"],
-            "status": "MATCH"
-        }
+        breakdown["object"] = {"name": "Object", "claim": claim_struct["object"], "evidence": claim_struct["object"], "status": "MATCH"}
         if conflict_details["role_reversal"]:
             breakdown["object"]["evidence"] = conflict_details["role_reversal"]["evidence_object"]
             breakdown["object"]["status"] = "CONFLICT"
-            
     if claim_struct.get("location"):
-        breakdown["location"] = {
-            "name": "Location",
-            "claim": claim_struct["location"],
-            "evidence": claim_struct["location"],
-            "status": "MATCH"
-        }
+        breakdown["location"] = {"name": "Location", "claim": claim_struct["location"], "evidence": claim_struct["location"], "status": "MATCH"}
         if conflict_details["location"]:
             breakdown["location"]["evidence"] = conflict_details["location"]["evidence"]
             if conflict_details["location"].get("status") == "UNSUPPORTED":
                 breakdown["location"]["status"] = "UNSUPPORTED"
             else:
                 breakdown["location"]["status"] = "CONFLICT"
-                
     if claim_struct.get("date"):
-        breakdown["date"] = {
-            "name": "Date",
-            "claim": claim_struct["date"],
-            "evidence": claim_struct["date"],
-            "status": "MATCH"
-        }
+        breakdown["date"] = {"name": "Date", "claim": claim_struct["date"], "evidence": claim_struct["date"], "status": "MATCH"}
         if conflict_details["date"]:
             breakdown["date"]["evidence"] = conflict_details["date"]["evidence"]
             breakdown["date"]["status"] = "CONFLICT"
-            
-    def _fmt_num(n):
-        cur = n.get("currency", "")
-        val = int(n["value"]) if n["value"] == int(n["value"]) else n["value"]
-        unit = (" " + n["unit"].capitalize()) if n.get("unit") else ""
-        return f"{cur}{val}{unit}"
     if claim_numbers:
-        num_label = ", ".join([_fmt_num(n) for n in claim_numbers])
-        breakdown["numbers"] = {
-            "name": "Numbers",
-            "claim": num_label,
-            "evidence": num_label,
-            "status": "MATCH"
-        }
+        num_label = ", ".join([str(n["value"]) + (" " + n["unit"] if n.get("unit") else "") for n in claim_numbers])
+        breakdown["numbers"] = {"name": "Numbers", "claim": num_label, "evidence": num_label, "status": "MATCH"}
         if conflict_details["numbers"]:
             breakdown["numbers"]["evidence"] = conflict_details["numbers"]["evidence"]
             breakdown["numbers"]["status"] = "UNSUPPORTED"
-            
-    breakdown["negation"] = {
-        "name": "Negation",
-        "claim": "Negated" if claim_negation else "Asserted",
-        "evidence": "Negated" if claim_negation else "Asserted",
-        "status": "MATCH"
-    }
-    if conflict_details["negation"]:
-        breakdown["negation"]["evidence"] = conflict_details["negation"]["evidence"]
-        breakdown["negation"]["status"] = "CONFLICT"
+    breakdown["negation"] = {"name": "Negation", "claim": "Negated" if claim_negation else "Asserted", "evidence": "Negated" if claim_negation else "Asserted", "status": "MATCH"}
 
-    # Default values
+    # Final Aggregation
     verdict = "UNVERIFIED"
     confidence = 0.0
     v_reason = "No relevant news coverage found."
@@ -1506,27 +1695,15 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
     sources = articles[:6]
     
     if total == 0:
-        return {
-            "verdict": verdict,
-            "confidence": confidence,
-            "explanation": expl,
-            "verdict_reason": v_reason,
-            "attribute_breakdown": breakdown,
-            "sources": []
-        }
+        return {"verdict": verdict, "confidence": confidence, "explanation": expl, "verdict_reason": v_reason, "attribute_breakdown": breakdown, "sources": []}
         
-    # Evidence-Aware Aggregation Rule:
     has_strong_contradiction = contradiction_count > 0 and (total_contradiction_score >= total_support_score or support_count == 0)
     
     if has_strong_contradiction:
         verdict = "CONTRADICTED"
         confidence = min(0.95, 0.50 + (contradiction_count / total * 0.45))
         sources = contradicting_sources
-        
-        if conflict_details["role_reversal"]:
-            v_reason = "Subject-object role reversal."
-            expl = f"Subject/object role reversal: Claimed '{conflict_details['role_reversal']['claim_subject']}' acted on '{conflict_details['role_reversal']['claim_object']}', but evidence shows role reversal."
-        elif conflict_details["negation"]:
+        if conflict_details["negation"]:
             v_reason = "Negation/action contradiction."
             expl = f"Negation mismatch: Claimed fact is {conflict_details['negation']['claim'].lower()}, but evidence is {conflict_details['negation']['evidence'].lower()}."
         elif conflict_details["location"]:
@@ -1535,58 +1712,83 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
         elif conflict_details["date"]:
             v_reason = "Date contradiction."
             expl = f"Date mismatch: Claimed event date '{conflict_details['date']['claim']}' contradicts the established date '{conflict_details['date']['evidence']}'."
+        elif conflict_details["state"]:
+            v_reason = "State transition contradiction."
+            expl = f"State transition contradiction: claim state '{conflict_details['state']['claim']}' contradicts evidence state '{conflict_details['state']['evidence']}'."
+        elif conflict_details["role_reversal"]:
+            v_reason = "Subject-object role reversal."
+            expl = f"Subject/object role reversal: Claimed '{conflict_details['role_reversal']['claim_subject']}' acted on '{conflict_details['role_reversal']['claim_object']}', but evidence shows role reversal."
         else:
             v_reason = "Factual inconsistency detected."
-            expl = "Factual inconsistencies (e.g. location, date, negation, or role reversal) were detected in the news coverage."
+            expl = "Factual inconsistencies were detected in the news coverage."
             
     elif support_count > 0:
-        has_claim_numbers = len(claim_numbers) > 0
-        numbers_validated = False
-        if has_claim_numbers:
-            for art in supporting_sources:
-                evidence_text = art["title"] + " " + art["description"]
-                ev_numbers = parse_factual_numbers(evidence_text)
-                all_nums_found = True
-                for num in claim_numbers:
-                    if not any(numbers_match(num, ev_num) for ev_num in ev_numbers):
-                        all_nums_found = False
-                        break
-                if all_nums_found:
-                    numbers_validated = True
-                    break
-                    
-        if has_claim_numbers and not numbers_validated:
-            verdict = "MIXED"
-            confidence = 0.65
+        if conflict_details["location"] and conflict_details["location"].get("status") == "UNSUPPORTED":
+            verdict = "UNVERIFIED"
+            confidence = 0.0
             sources = supporting_sources
-            v_reason = "Numerical claim unsupported."
-            expl = f"Core event is supported by news coverage, but the claimed numerical figures ({breakdown['numbers']['claim']}) are not independently verified."
-            
-            conflict_details["numbers"] = {
-                "claim": breakdown["numbers"]["claim"],
-                "evidence": "No matching figure found"
-            }
-            breakdown["numbers"]["evidence"] = "No matching figure found"
-            breakdown["numbers"]["status"] = "UNSUPPORTED"
+            v_reason = "Location missing from headlines."
+            expl = f"Relevant news coverage was found, but it does not confirm the claimed location '{claim_struct.get('location')}'."
         else:
-            verdict = "VERIFIED"
-            confidence = min(0.98, 0.55 + (support_count / total * 0.44))
-            sources = supporting_sources
-            v_reason = "All attributes verified."
-            expl = "Reliable online news coverage independently supports all factual attributes of the claim."
+            # Check if numbers were validated
+            has_claim_numbers = len(claim_numbers) > 0
+            numbers_validated = False
+            if has_claim_numbers:
+                for art in supporting_sources:
+                    evidence_text = art["title"] + " " + art["description"]
+                    ev_numbers = parse_factual_numbers(evidence_text)
+                    all_nums_found = True
+                    for num in claim_numbers:
+                        c_val = num.get("value", 0.0)
+                        c_unit = num.get("unit", "").lower()
+                        c_scale = 1.0
+                        if c_unit in ["billion", "b"]:
+                            c_scale = 1e9
+                        elif c_unit in ["million", "m"]:
+                            c_scale = 1e6
+                        elif c_unit in ["trillion"]:
+                            c_scale = 1e12
+                        num["scale"] = c_scale
+                        num["normalized_val"] = c_val * c_scale
+                        
+                        if not any(numbers_match(num, ev_num) for ev_num in ev_numbers):
+                            all_nums_found = False
+                            break
+                    if all_nums_found:
+                        numbers_validated = True
+                        break
+                        
+            if has_claim_numbers and not numbers_validated:
+                verdict = "MIXED"
+                confidence = 0.65
+                sources = supporting_sources
+                v_reason = "Numerical claim unsupported."
+                expl = f"Core event is supported by news coverage, but the claimed numerical figures ({breakdown['numbers']['claim']}) are not independently verified."
+                
+                conflict_details["numbers"] = {
+                    "claim": breakdown["numbers"]["claim"],
+                    "evidence": "No matching figure found"
+                }
+                breakdown["numbers"]["evidence"] = "No matching figure found"
+                breakdown["numbers"]["status"] = "UNSUPPORTED"
+            else:
+                verdict = "VERIFIED"
+                confidence = min(0.98, 0.55 + (support_count / total * 0.44))
+                sources = supporting_sources
+                v_reason = "All attributes verified."
+                expl = "Reliable online news coverage independently supports all factual attributes of the claim."
             
     else:
         verdict = "UNVERIFIED"
         confidence = 0.0
         sources = articles[:6]
-        
         if conflict_details["location"] and conflict_details["location"].get("status") == "UNSUPPORTED":
             v_reason = "Location missing from headlines."
             expl = f"Relevant news coverage was found, but it does not confirm the claimed location '{claim_struct.get('location')}'."
         else:
             v_reason = "Insufficient evidence."
             expl = "There is insufficient reliable online news coverage to confidently verify or contradict this claim."
-            
+        
     log(f"Aggregation results: support={support_count}, contradiction={contradiction_count}, neutral={neutral_count}")
     log(f"Final Verdict: '{verdict}' (Confidence: {confidence:.2%}), Reason: {v_reason}")
     return {

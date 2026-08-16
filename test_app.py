@@ -1057,5 +1057,384 @@ class NewsVerificationTestCase(unittest.TestCase):
         res = verify_claim_against_evidence(struct, mock_articles)
         self.assertEqual(res["verdict"], "UNVERIFIED")
 
+    @patch("requests.get")
+    def test_GEN1_same_event_later_publication(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X acquired Company Y in 2025.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X acquired Company Y in 2025."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X acquired Company Y",
+            "link": "https://gen1",
+            "source": "TechNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X acquired Company Y in 2025."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
+    @patch("requests.get")
+    def test_GEN2_same_event_earlier_event_date(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X acquired Company Y in 2025.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X acquired Company Y in 2026."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X acquired Company Y in 2025",
+            "link": "https://gen2",
+            "source": "TechNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X acquired Company Y in 2025."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN3_explicit_conflicting_event_date(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Person X won the award in 2026.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Person X won the award in 2025."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Person X won award in 2026",
+            "link": "https://gen3",
+            "source": "AwardsNet",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Person X won the award in 2026."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN4_multiple_dates_in_one_article(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>In 2024, Company X leased space. In 2025, Company X opened the office. Plans for 2026 were discussed.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X opened the office in 2025."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X office developments",
+            "link": "https://gen4",
+            "source": "OfficeNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X leased space in 2024, and opened the office in 2025."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
+    @patch("requests.get")
+    def test_GEN5_publication_date_different_from_event_date(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X launched the satellite last year.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X launched the satellite in 2025."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X satellite launch details",
+            "link": "https://gen5",
+            "source": "SpaceNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X launched the satellite last year."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
+    @patch("requests.get")
+    def test_GEN6_same_entities_but_different_event(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X signed a sponsorship agreement with Company Y.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X acquired Company Y."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X signs sponsorship deal",
+            "link": "https://gen6",
+            "source": "BizWire",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X signed a sponsorship agreement with Company Y."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "UNVERIFIED")
+
+    @patch("requests.get")
+    def test_GEN7_subject_object_reversal(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company Y acquired Company X.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X acquired Company Y."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company Y acquired Company X",
+            "link": "https://gen7",
+            "source": "M&ANews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company Y acquired Company X."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN8_positive_vs_negative_proposition(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X did not sign the agreement.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X signed the agreement."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X did not sign",
+            "link": "https://gen8",
+            "source": "LegalNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X did not sign the agreement."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN9_missing_quantity(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X invested money in the project.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X invested $50 billion."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X investment",
+            "link": "https://gen9",
+            "source": "InvestDaily",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X invested money in the project."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "MIXED")
+
+    @patch("requests.get")
+    def test_GEN10_different_quantity(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X invested $50 million.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X invested $50 billion."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X investments",
+            "link": "https://gen10",
+            "source": "InvestDaily",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X invested $50 million."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN11_missing_location(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X opened a facility.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X opened a facility in Hyderabad."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X opens facility",
+            "link": "https://gen11",
+            "source": "BizNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X opened a facility."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "UNVERIFIED")
+
+    @patch("requests.get")
+    def test_GEN12_different_location(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X opened a facility in Mumbai.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X opened a facility in Hyderabad."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X opens facility in Mumbai",
+            "link": "https://gen12",
+            "source": "BizNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X opened a facility in Mumbai."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN13_post_state_activity_contradiction(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Person X addressed a rally in 2025.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Person X died in 2020."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Person X addresses rally in 2025",
+            "link": "https://gen13",
+            "source": "NewsNetwork",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Person X addressed a rally in 2025."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN14_irrelevant_article_containing_same_entity(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X CEO talked about his childhood at a conference in 2025.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X launched a new electric car in 2025."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X CEO details",
+            "link": "https://gen14",
+            "source": "TechDaily",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X CEO talked about his childhood at a conference in 2025."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "UNVERIFIED")
+
+    @patch("requests.get")
+    def test_GEN15_multiple_relevant_evidence_sources(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X launched a product.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X launched a product."
+        struct = parse_claim_structure(claim)
+        mock_articles = [
+            {
+                "title": "Company X launches product",
+                "link": "https://gen15a",
+                "source": "TechCrunch",
+                "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+                "description": "Company X launched a product."
+            },
+            {
+                "title": "Company X rolls out product",
+                "link": "https://gen15b",
+                "source": "Engadget",
+                "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+                "description": "Company X launched a product."
+            }
+        ]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
+    @patch("requests.get")
+    def test_GEN16_conflicting_evidence_sources(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X did not sign the contract.</p></body></html>"
+        mock_get.return_value = mock_resp
+        
+        claim = "Company X signed the contract."
+        struct = parse_claim_structure(claim)
+        mock_articles = [
+            {
+                "title": "Company X signed the contract",
+                "link": "https://gen16a",
+                "source": "Standard",
+                "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+                "description": "Company X signed the contract."
+            },
+            {
+                "title": "Company X did not sign the contract",
+                "link": "https://gen16b",
+                "source": "Reuters",
+                "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+                "description": "Company X did not sign the contract."
+            }
+        ]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "CONTRADICTED")
+
+    @patch("requests.get")
+    def test_GEN17_historical_event_reported_years_later(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X, which was founded in 1995, announced profits.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X was founded in 1995."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X profits announced",
+            "link": "https://gen17",
+            "source": "HistBiz",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X, which was founded in 1995, announced profits."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
+    @patch("requests.get")
+    def test_GEN18_future_event_claim(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X will launch a rocket in 2028.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X will launch a rocket in 2028."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X plans rocket launch in 2028",
+            "link": "https://gen18",
+            "source": "AeroNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X will launch a rocket in 2028."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
+    @patch("requests.get")
+    def test_GEN19_article_containing_several_unrelated_events(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X signed a lease. Company Z acquired Company Y. Company X launched an app.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X acquired Company Y."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Biz roundup",
+            "link": "https://gen19",
+            "source": "BizNews",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X signed a lease. Company Z acquired Company Y. Company X launched an app."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "UNVERIFIED")
+
+    @patch("requests.get")
+    def test_GEN20_multiple_claims_in_one_article(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><p>Company X opened a factory in Hyderabad. In other news, Company Y closed its doors.</p></body></html>"
+        mock_get.return_value = mock_resp
+        claim = "Company X opened a factory in Hyderabad."
+        struct = parse_claim_structure(claim)
+        mock_articles = [{
+            "title": "Company X opens factory in Hyderabad",
+            "link": "https://gen20",
+            "source": "CityBiz",
+            "pub_date": "Sun, 09 Aug 2026 10:00:00 GMT",
+            "description": "Company X opened a factory in Hyderabad. In other news, Company Y closed its doors."
+        }]
+        res = verify_claim_against_evidence(struct, mock_articles)
+        self.assertEqual(res["verdict"], "VERIFIED")
+
 if __name__ == "__main__":
     unittest.main()
