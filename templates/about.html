@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About - Fake News Detection System</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+    <header>
+        <nav class="navbar">
+            <a href="{{ url_for('index') }}" class="navbar-brand">
+                FakeNews<span>Detector</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="{{ url_for('index') }}" class="nav-link">Home</a></li>
+                <li><a href="{{ url_for('accuracy') }}" class="nav-link">Model Accuracy</a></li>
+                <li><a href="{{ url_for('history') }}" class="nav-link">History Log</a></li>
+                <li><a href="{{ url_for('about') }}" class="nav-link active">About Project</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <h1>About the Project</h1>
+            <p>A look at the technology, dataset, and architectural design of this machine learning system.</p>
+        </section>
+
+        <!-- Project overview card -->
+        <section class="card">
+            <h2>Project Overview</h2>
+            <p style="margin-top: 1rem;">
+                The <strong>Fake News Detection System</strong> is a classical Natural Language Processing (NLP) and Machine Learning application designed to assess the authenticity of news headlines and articles. The primary objective is to differentiate between genuine news reporting (factual events) and fake news items (conspiracy, clickbait, false information).
+            </p>
+        </section>
+
+        <!-- Preprocessing card -->
+        <section class="card">
+            <h2>Text Preprocessing Pipeline</h2>
+            <p style="margin-top: 1rem; margin-bottom: 1rem;">
+                Raw text data is unstructured and noisy. To train clean classical models, the input text goes through a strict sequence of cleaning operations:
+            </p>
+            <ul style="padding-left: 1.5rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                <li><strong>Lowercase Conversion</strong>: Standardizes spelling differences (e.g. "Gov" and "gov").</li>
+                <li><strong>URL & HTML Tag Removal</strong>: Clears out crawled web noise and links.</li>
+                <li><strong>Number & Punctuation Removal</strong>: Substitutes numbers and punctuation characters with spaces to separate tokens clearly.</li>
+                <li><strong>Stopwords Filtering</strong>: Removes common words (e.g. "he", "was", "the") that add no predictive signals.</li>
+                <li><strong>Lemmatization</strong>: Reduces inflected forms to base dictionary words (e.g. "discovered" -> "discover", "countries" -> "country").</li>
+            </ul>
+        </section>
+
+        <!-- Algorithms Card -->
+        <section class="card">
+            <h2>Model Architecture</h2>
+            <p style="margin-top: 1rem; margin-bottom: 1rem;">
+                We extract numerical features using a <strong>TF-IDF Vectorizer</strong> with an <code>ngram_range=(1,2)</code> and limit the vocabulary to the top <code>5000</code> features. We train and evaluate three classical algorithms:
+            </p>
+            <ul style="padding-left: 1.5rem; display: flex; flex-direction: column; gap: 0.75rem;">
+                <li>
+                    <strong>Logistic Regression</strong>: 
+                    A linear model that applies the Sigmoid function to map text features into probabilities ($0$ to $1$). Excellent for high-dimensional text datasets.
+                </li>
+                <li>
+                    <strong>Multinomial Naive Bayes</strong>: 
+                    A probabilistic classifier based on Bayes' Theorem, calculating the joint probability of words given a class. Highly efficient for text frequency analysis.
+                </li>
+                <li>
+                    <strong>Linear Support Vector Machine (SVM)</strong>: 
+                    Finds the optimal hyperplane that separates the Real and Fake news classes with maximum margin. Known for superior performance on text boundaries.
+                </li>
+            </ul>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2026 Fake News Detection System. All rights reserved.</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

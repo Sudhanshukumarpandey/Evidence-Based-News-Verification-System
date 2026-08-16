@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fake News Detection System</title>
+    <!-- Link to custom styles -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+    <!-- Header containing Navigation Bar -->
+    <header>
+        <nav class="navbar">
+            <a href="{{ url_for('index') }}" class="navbar-brand">
+                FakeNews<span>Detector</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="{{ url_for('index') }}" class="nav-link active">Home</a></li>
+                <li><a href="{{ url_for('accuracy') }}" class="nav-link">Model Accuracy</a></li>
+                <li><a href="{{ url_for('history') }}" class="nav-link">History Log</a></li>
+                <li><a href="{{ url_for('about') }}" class="nav-link">About Project</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <!-- Main Content Container -->
+    <main>
+        <!-- Hero Welcome Header -->
+        <section class="hero">
+            <h1>Predict Credibility of News Articles</h1>
+            <p>Paste the text of a news article below to check if it is Real or Fake using Classical Machine Learning.</p>
+        </section>
+
+        <!-- Display Flash Messages (Errors) if any are passed by the server -->
+        {% if error %}
+        <div class="alert alert-danger" role="alert">
+            {{ error }}
+        </div>
+        {% endif %}
+
+        <!-- Prediction input card -->
+        <section class="card">
+            <form id="predictForm" action="{{ url_for('predict') }}" method="POST">
+                <div class="form-group">
+                    <label for="news_text">News Article Text</label>
+                    <textarea 
+                        name="news_text" 
+                        id="news_text" 
+                        class="form-textarea" 
+                        placeholder="Paste the full body or headline of the news article here (minimum 10 words for best accuracy)..." 
+                        required></textarea>
+                </div>
+                <button type="submit" id="submitBtn" class="btn">Analyze & Predict</button>
+            </form>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer>
+        <p>&copy; 2026 Fake News Detection System. All rights reserved.</p>
+    </footer>
+
+    <!-- Link to helper JS scripts -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

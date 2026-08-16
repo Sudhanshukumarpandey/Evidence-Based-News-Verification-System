@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prediction History - Fake News Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+    <header>
+        <nav class="navbar">
+            <a href="{{ url_for('index') }}" class="navbar-brand">
+                FakeNews<span>Detector</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="{{ url_for('index') }}" class="nav-link">Home</a></li>
+                <li><a href="{{ url_for('accuracy') }}" class="nav-link">Model Accuracy</a></li>
+                <li><a href="{{ url_for('history') }}" class="nav-link active">History Log</a></li>
+                <li><a href="{{ url_for('about') }}" class="nav-link">About Project</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <h1>Prediction History Log</h1>
+            <p>View, search, or manage all past article classification queries stored in the database.</p>
+        </section>
+
+        <!-- Search Bar and Clear controls -->
+        <section class="history-controls">
+            <form action="{{ url_for('history') }}" method="GET" class="search-box">
+                <input 
+                    type="text" 
+                    name="search" 
+                    class="search-input" 
+                    placeholder="Search past news text or prediction label..." 
+                    value="{{ search_query }}">
+                <button type="submit" class="btn btn-search">Search</button>
+            </form>
+            
+            {% if history %}
+                <a href="{{ url_for('clear_history') }}" id="clearHistoryBtn" class="btn btn-danger">Clear All History</a>
+            {% endif %}
+        </section>
+
+        <!-- Prediction history items list -->
+        <section class="history-list">
+            {% if history %}
+                {% for item in history %}
+                    <div class="history-card">
+                        <div class="history-card-header">
+                            <!-- Toggle Real/Fake classes on badges -->
+                            {% if item.prediction == 'Real' %}
+                                <span class="history-badge real">{{ item.prediction }}</span>
+                            {% else %}
+                                <span class="history-badge fake">{{ item.prediction }}</span>
+                            {% endif %}
+                            
+                            <span class="history-card-meta">
+                                Confidence: <strong>{{ "%.2f"|format(item.confidence * 100) }}%</strong>
+                            </span>
+                        </div>
+                        
+                        <div class="history-card-body">
+                            "{{ item.text }}"
+                        </div>
+                        
+                        <div class="history-card-header">
+                            <span class="history-card-meta">
+                                Checked on: {{ item.date }} at {{ item.time }}
+                            </span>
+                            <div class="history-card-footer">
+                                <a href="{{ url_for('delete_entry', entry_id=item.id) }}" class="btn-delete btn-delete-entry">Delete</a>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            {% else %}
+                <div class="card" style="text-align: center; color: var(--text-muted);">
+                    {% if search_query %}
+                        No records match your search: <strong>"{{ search_query }}"</strong>.
+                        <br><br>
+                        <a href="{{ url_for('history') }}" class="btn btn-secondary" style="width: auto; padding: 0.5rem 1rem;">Reset Search</a>
+                    {% else %}
+                        No predictions have been recorded yet. Go to the <a href="{{ url_for('index') }}">Home Page</a> to test an article!
+                    {% endif %}
+                </div>
+            {% endif %}
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2026 Fake News Detection System. All rights reserved.</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

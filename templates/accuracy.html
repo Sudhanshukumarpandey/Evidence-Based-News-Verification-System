@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Model Performance - Fake News Detection</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+    <header>
+        <nav class="navbar">
+            <a href="{{ url_for('index') }}" class="navbar-brand">
+                FakeNews<span>Detector</span>
+            </a>
+            <ul class="navbar-nav">
+                <li><a href="{{ url_for('index') }}" class="nav-link">Home</a></li>
+                <li><a href="{{ url_for('accuracy') }}" class="nav-link active">Model Accuracy</a></li>
+                <li><a href="{{ url_for('history') }}" class="nav-link">History Log</a></li>
+                <li><a href="{{ url_for('about') }}" class="nav-link">About Project</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <h1>Model Performance & Comparison</h1>
+            <p>Compare the training evaluation metrics across all three trained algorithms.</p>
+        </section>
+
+        <!-- Best Model Card -->
+        <section class="card" style="text-align: center;">
+            <h2>Selected Model in Production</h2>
+            <p style="font-size: 1.1rem; margin-top: 0.5rem; color: var(--text-muted);">
+                The system automatically loaded the model that achieved the highest accuracy score during testing.
+            </p>
+            <div class="prediction-badge real" style="font-size: 1.75rem; padding: 0.5rem 1.5rem; margin-top: 1rem;">
+                {{ best_model }} ({{ "%.2f"|format(best_accuracy * 100) }}% Acc)
+            </div>
+        </section>
+
+        <!-- Comparison Table Card -->
+        <section class="card">
+            <h2>Evaluation Comparison Matrix</h2>
+            <p style="color: var(--text-muted); font-size: 0.95rem; margin-top: 0.25rem;">
+                Scores computed on the 20% validation split.
+            </p>
+
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Model Name</th>
+                            <th>Accuracy</th>
+                            <th>Precision</th>
+                            <th>Recall</th>
+                            <th>F1 Score</th>
+                            <th>Cross-Validation Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if results %}
+                            {% for res in results %}
+                                <tr>
+                                    <td><strong>{{ res.Model }}</strong></td>
+                                    <td class="metric-highlight">{{ "%.2f"|format(res.Accuracy * 100) }}%</td>
+                                    <td>{{ "%.2f"|format(res.Precision * 100) }}%</td>
+                                    <td>{{ "%.2f"|format(res.Recall * 100) }}%</td>
+                                    <td>{{ "%.2f"|format(res['F1 Score'] * 100) }}%</td>
+                                    <td>{{ "%.2f"|format(res['CV Accuracy'] * 100) }}%</td>
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="6" style="text-align: center; color: var(--text-muted);">
+                                    No evaluation metrics found. Please make sure train_model.py was executed.
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Metric Definitions Card -->
+        <section class="card">
+            <h2>Key Evaluation Metrics Explained</h2>
+            <div style="display: flex; flex-direction: column; gap: 1.25rem; margin-top: 1.25rem;">
+                <div>
+                    <strong>Accuracy</strong>
+                    <p style="color: var(--text-muted); font-size: 0.95rem;">
+                        The percentage of total predictions that were correct. 
+                        $$\text{Accuracy} = \frac{\text{True Positives} + \text{True Negatives}}{\text{Total Predictions}}$$
+                    </p>
+                </div>
+                <div>
+                    <strong>Precision (Positive Predictive Value)</strong>
+                    <p style="color: var(--text-muted); font-size: 0.95rem;">
+                        Out of all the news articles that the model predicted to be <strong>Real</strong>, how many were actually real? High precision is important if you want to avoid labeling fake articles as real news.
+                        $$\text{Precision} = \frac{\text{True Positives}}{\text{True Positives} + \text{False Positives}}$$
+                    </p>
+                </div>
+                <div>
+                    <strong>Recall (Sensitivity)</strong>
+                    <p style="color: var(--text-muted); font-size: 0.95rem;">
+                        Out of all the news articles that were <strong>actually Real</strong>, how many did the model correctly identify? High recall means the model does not miss genuine news.
+                        $$\text{Recall} = \frac{\text{True Positives}}{\text{True Positives} + \text{False Negatives}}$$
+                    </p>
+                </div>
+                <div>
+                    <strong>F1 Score</strong>
+                    <p style="color: var(--text-muted); font-size: 0.95rem;">
+                        The harmonic mean of Precision and Recall. It provides a single balanced score, particularly useful if classes are imbalanced.
+                        $$\text{F1 Score} = 2 \times \frac{\text{Precision} \times \text{Recall}}{\text{Precision} + \text{Recall}}$$
+                    </p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2026 Fake News Detection System. All rights reserved.</p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <!-- Include MathJax for rendering the LaTeX formulas beautifully -->
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</body>
+</html>
