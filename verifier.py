@@ -1654,20 +1654,27 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
     
     # Construct breakdown
     breakdown = {}
+    is_supported = (support_count > 0)
     if claim_struct.get("subject"):
         breakdown["subject"] = {"name": "Subject", "claim": claim_struct["subject"], "evidence": claim_struct["subject"], "status": "MATCH"}
         if conflict_details["role_reversal"]:
             breakdown["subject"]["evidence"] = conflict_details["role_reversal"]["evidence_subject"]
             breakdown["subject"]["status"] = "CONFLICT"
     if claim_struct.get("action"):
-        breakdown["action"] = {"name": "Action", "claim": claim_struct["action"], "evidence": claim_struct["action"], "status": "MATCH"}
+        act_status = "MATCH" if is_supported else "UNSUPPORTED"
+        act_evidence = claim_struct["action"] if is_supported else "Not found in evidence"
+        breakdown["action"] = {"name": "Action", "claim": claim_struct["action"], "evidence": act_evidence, "status": act_status}
     if claim_struct.get("object"):
-        breakdown["object"] = {"name": "Object", "claim": claim_struct["object"], "evidence": claim_struct["object"], "status": "MATCH"}
+        obj_status = "MATCH" if is_supported else "UNSUPPORTED"
+        obj_evidence = claim_struct["object"] if is_supported else "Not found in evidence"
+        breakdown["object"] = {"name": "Object", "claim": claim_struct["object"], "evidence": obj_evidence, "status": obj_status}
         if conflict_details["role_reversal"]:
             breakdown["object"]["evidence"] = conflict_details["role_reversal"]["evidence_object"]
             breakdown["object"]["status"] = "CONFLICT"
     if claim_struct.get("location"):
-        breakdown["location"] = {"name": "Location", "claim": claim_struct["location"], "evidence": claim_struct["location"], "status": "MATCH"}
+        loc_status = "MATCH" if is_supported else "UNSUPPORTED"
+        loc_evidence = claim_struct["location"] if is_supported else "Not found in evidence"
+        breakdown["location"] = {"name": "Location", "claim": claim_struct["location"], "evidence": loc_evidence, "status": loc_status}
         if conflict_details["location"]:
             breakdown["location"]["evidence"] = conflict_details["location"]["evidence"]
             if conflict_details["location"].get("status") == "UNSUPPORTED":
@@ -1675,17 +1682,26 @@ def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
             else:
                 breakdown["location"]["status"] = "CONFLICT"
     if claim_struct.get("date"):
-        breakdown["date"] = {"name": "Date", "claim": claim_struct["date"], "evidence": claim_struct["date"], "status": "MATCH"}
+        date_status = "MATCH" if is_supported else "UNSUPPORTED"
+        date_evidence = claim_struct["date"] if is_supported else "Not found in evidence"
+        breakdown["date"] = {"name": "Date", "claim": claim_struct["date"], "evidence": date_evidence, "status": date_status}
         if conflict_details["date"]:
             breakdown["date"]["evidence"] = conflict_details["date"]["evidence"]
             breakdown["date"]["status"] = "CONFLICT"
     if claim_numbers:
         num_label = ", ".join([str(n["value"]) + (" " + n["unit"] if n.get("unit") else "") for n in claim_numbers])
-        breakdown["numbers"] = {"name": "Numbers", "claim": num_label, "evidence": num_label, "status": "MATCH"}
+        num_status = "MATCH" if is_supported else "UNSUPPORTED"
+        num_evidence = num_label if is_supported else "Not found in evidence"
+        breakdown["numbers"] = {"name": "Numbers", "claim": num_label, "evidence": num_evidence, "status": num_status}
         if conflict_details["numbers"]:
             breakdown["numbers"]["evidence"] = conflict_details["numbers"]["evidence"]
             breakdown["numbers"]["status"] = "UNSUPPORTED"
-    breakdown["negation"] = {"name": "Negation", "claim": "Negated" if claim_negation else "Asserted", "evidence": "Negated" if claim_negation else "Asserted", "status": "MATCH"}
+    neg_status = "MATCH" if is_supported else "UNSUPPORTED"
+    neg_evidence = ("Negated" if claim_negation else "Asserted") if is_supported else "Not found in evidence"
+    breakdown["negation"] = {"name": "Negation", "claim": "Negated" if claim_negation else "Asserted", "evidence": neg_evidence, "status": neg_status}
+    if conflict_details["negation"]:
+        breakdown["negation"]["evidence"] = conflict_details["negation"]["evidence"]
+        breakdown["negation"]["status"] = "CONFLICT"
 
     # Final Aggregation
     verdict = "UNVERIFIED"
