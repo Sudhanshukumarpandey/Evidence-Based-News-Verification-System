@@ -365,24 +365,36 @@ def generate_queries_for_claim(struct):
         
     return unique_queries
 
-def query_google_news(search_query, limit=8):
+def query_google_news(search_query, limit=8, diagnostic_info=None):
     """
     Fetches matching news article snippets using the Google News search engine.
     """
+    def log(msg):
+        if diagnostic_info is not None:
+            diagnostic_info.append(msg)
+        print(msg)
+
     if not search_query.strip():
+        log("Google News RSS: Empty search query.")
         return []
         
-    url = f"https://news.google.com/rss/search?q={requests.utils.quote(search_query)}"
+    url = f"https://news.google.com/rss/search?hl=en-US&gl=US&ceid=US:en&q={requests.utils.quote(search_query)}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/xhtml+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive"
     }
     
+    log(f"Google News RSS: Querying '{search_query}' via URL: {url}")
     try:
         response = requests.get(url, headers=headers, timeout=5)
+        log(f"Google News RSS: HTTP response code {response.status_code}")
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, "xml")
         items = soup.find_all("item")
+        log(f"Google News RSS: XML parsed successfully. Found {len(items)} raw RSS items.")
         
         results = []
         for item in items[:limit]:
@@ -402,7 +414,7 @@ def query_google_news(search_query, limit=8):
             })
         return results
     except Exception as e:
-        print(f"Google News RSS fetch error: {e}")
+        log(f"Google News RSS: Failed to fetch query '{search_query}': {e}")
         return []
 
 def deduplicate_articles(articles):
@@ -1103,19 +1115,29 @@ def is_syndicated_copy(art, processed_articles):
             return True
     return False
 
-def verify_claim_against_evidence(claim_struct, articles):
+def verify_claim_against_evidence(claim_struct, articles, diagnostic_info=None):
     """
     Evaluates evidence sentences/body texts against the claim structure.
     Determines SUPPORTED, CONTRADICTED, or UNVERIFIED statuses with claim-scoped reasoning.
     """
+    def log(msg):
+        if diagnostic_info is not None:
+            diagnostic_info.append(msg)
+        print(msg)
+
+    log(f"verify_claim_against_evidence: Evaluating claim structure: {claim_struct}")
+    log(f"verify_claim_against_evidence: Received {len(articles)} articles.")
+
     if not articles:
+        log("verify_claim_against_evidence: No articles provided. Returning UNVERIFIED.")
         return {
             "verdict": "UNVERIFIED",
             "confidence": 0.0,
             "explanation": "No relevant and reliable online news coverage could be found to verify this claim.",
             "verdict_reason": "No news coverage found.",
             "attribute_breakdown": {},
-            "sources": []
+            "sources": [],
+            "diagnostics": diagnostic_info
         }
         
     support_count = 0
@@ -1145,19 +1167,22 @@ def verify_claim_against_evidence(claim_struct, articles):
         "numbers": None
     }
     
-    for art in articles[:6]:
+    for idx, art in enumerate(articles[:6]):
         url = art["link"]
         scraped_text = ""
+        log(f"Article [{idx+1}]: Source: '{art.get('source')}', Title: '{art.get('title')}'")
+        log(f"  URL: {url}")
         
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5",
                 "Connection": "keep-alive",
                 "Upgrade-Insecure-Requests": "1"
             }
             response = requests.get(url, headers=headers, timeout=5)
+            log(f"  Scrape HTTP Status: {response.status_code}")
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
                 paragraphs = [p.get_text().strip() for p in soup.find_all("p")]
@@ -1181,54 +1206,69 @@ def verify_claim_against_evidence(claim_struct, articles):
         
         # 1. Strict Entity Binding Match Check
         entity_missing = False
+        gate_reason = ""
+        
         for country in claim_struct.get("countries", []):
             if not match_country_in_text(country, evidence_corpus_lower):
                 entity_missing = True
+                gate_reason = f"Country '{country}' not found in text."
                 break
                 
-        # Exact Entity Boundary Check
-        for ent in claim_struct.get("entities", []):
-            if not is_exact_entity_match(ent, evidence_corpus):
-                entity_missing = True
-                break
-                
-        # Organization Hard Gate: If claim has specific orgs (e.g. ISRO, RBI, SpaceX), evidence must mention at least one
-        claim_orgs = [o.lower() for o in claim_struct.get("organizations", [])]
-        if claim_orgs:
-            if not any(re.search(r'\b' + re.escape(o) + r'\b', evidence_corpus_lower) for o in claim_orgs):
-                entity_missing = True
-                
-        crucial_topics = ["nuclear", "ethanol", "data center", "datacenter", "aliens", "ufo", "mars", "water", "satellite"]
-        for topic in crucial_topics:
-            if topic in claim_struct.get("text", "").lower():
-                if topic in ["data center", "datacenter"]:
-                    if "data center" not in evidence_corpus_lower and "datacenter" not in evidence_corpus_lower and "cloud" not in evidence_corpus_lower:
-                        entity_missing = True
-                        break
-                else:
-                    if topic not in evidence_corpus_lower:
-                        entity_missing = True
-                        break
-                        
+        if not entity_missing:
+            # Exact Entity Boundary Check
+            for ent in claim_struct.get("entities", []):
+                if not is_exact_entity_match(ent, evidence_corpus):
+                    entity_missing = True
+                    gate_reason = f"Entity '{ent}' not found in text."
+                    break
+                    
+        if not entity_missing:
+            # Organization Hard Gate: If claim has specific orgs (e.g. ISRO, RBI, SpaceX), evidence must mention at least one
+            claim_orgs = [o.lower() for o in claim_struct.get("organizations", [])]
+            if claim_orgs:
+                if not any(re.search(r'\b' + re.escape(o) + r'\b', evidence_corpus_lower) for o in claim_orgs):
+                    entity_missing = True
+                    gate_reason = f"None of the required organizations {claim_orgs} found in text."
+                    
+        if not entity_missing:
+            crucial_topics = ["nuclear", "ethanol", "data center", "datacenter", "aliens", "ufo", "mars", "water", "satellite"]
+            for topic in crucial_topics:
+                if topic in claim_struct.get("text", "").lower():
+                    if topic in ["data center", "datacenter"]:
+                        if "data center" not in evidence_corpus_lower and "datacenter" not in evidence_corpus_lower and "cloud" not in evidence_corpus_lower:
+                            entity_missing = True
+                            gate_reason = "Crucial topic 'data center' or 'cloud' not found."
+                            break
+                    else:
+                        if topic not in evidence_corpus_lower:
+                            entity_missing = True
+                            gate_reason = f"Crucial topic '{topic}' not found."
+                            break
+                            
         if entity_missing:
+            log(f"  -> Neutral: Entity gate failed. Reason: {gate_reason}")
             art["type"] = "Neutral"
             neutral_count += 1
             continue
+        log("  -> Entity gate passed.")
             
         # Get claim-relevant sentences from evidence
         relevant_sentences = get_relevant_evidence_sentences(claim_struct, evidence_corpus)
         relevant_corpus = " ".join(relevant_sentences) if relevant_sentences else evidence_corpus
         relevant_corpus_lower = relevant_corpus.lower()
+        log(f"  Extracted {len(relevant_sentences)} claim-relevant sentences.")
         
         # Attribution Check
         attr_class = classify_attribution(relevant_corpus, art.get("source", ""))
         if attr_class == "ALLEGATION":
+            log("  -> Neutral: Attribution classified as ALLEGATION.")
             art["type"] = "Neutral"
             neutral_count += 1
             continue
             
         # Action Aspect & Event State Compatibility Check
         if not is_aspect_compatible(claim_action, relevant_corpus_lower):
+            log(f"  -> Neutral: Action aspect compatibility failed for '{claim_action}'.")
             art["type"] = "Neutral"
             neutral_count += 1
             continue
@@ -1237,6 +1277,7 @@ def verify_claim_against_evidence(claim_struct, articles):
         claim_state = classify_event_state(claim_struct["text"])
         state_compat, state_verdict = are_event_states_compatible(claim_state, ev_state, relevant_corpus_lower)
         if not state_compat:
+            log(f"  -> Event state mismatch: claim={claim_state}, evidence={ev_state}. Verdict: {state_verdict}")
             if state_verdict == "CONTRADICTED":
                 art["type"] = "Contradicting"
                 contradiction_count += 1
@@ -1251,6 +1292,7 @@ def verify_claim_against_evidence(claim_struct, articles):
         # 2. Subject-Object Role Reversal Check (sentence-scoped)
         role_reversal = detect_role_reversal(claim_struct, relevant_sentences, evidence_corpus)
         if role_reversal:
+            log("  -> Contradicting: Subject-Object Role Reversal detected.")
             art["type"] = "Contradicting"
             contradiction_count += 1
             total_contradiction_score += 1.5 * src_weight
@@ -1269,9 +1311,11 @@ def verify_claim_against_evidence(claim_struct, articles):
         if claim_negation != evidence_negated:
             if check_double_negation(relevant_corpus_lower):
                 # Double negation / ambiguity: fallback to neutral instead of false contradiction
+                log("  -> Neutral: Negation mismatch but double-negation/ambiguity triggered fallback to Neutral.")
                 art["type"] = "Neutral"
                 neutral_count += 1
                 continue
+            log(f"  -> Contradicting: Negation mismatch (claim negated={claim_negation}, evidence negated={evidence_negated}).")
             art["type"] = "Contradicting"
             contradiction_count += 1
             total_contradiction_score += 1.5 * src_weight
@@ -1288,10 +1332,12 @@ def verify_claim_against_evidence(claim_struct, articles):
         found_evidence_city = None
         if claim_location:
             found_evidence_city = extract_event_location(claim_struct, relevant_sentences, evidence_corpus)
+            log(f"  Claim location: '{claim_location}', extracted evidence location: '{found_evidence_city}'")
             if found_evidence_city and not are_locations_equivalent(found_evidence_city, claim_location):
                 location_conflict = True
                 
         if location_conflict:
+            log("  -> Contradicting: Location mismatch.")
             art["type"] = "Contradicting"
             contradiction_count += 1
             total_contradiction_score += 1.5 * src_weight
@@ -1308,10 +1354,12 @@ def verify_claim_against_evidence(claim_struct, articles):
         ev_year = None
         if claim_date:
             ev_year = extract_event_date(claim_struct, relevant_sentences, evidence_corpus)
+            log(f"  Claim date: '{claim_date}', extracted evidence date: '{ev_year}'")
             if not ev_year:
                 pub_year_match = re.search(r'\b(19\d\d|20\d\d)\b', art.get("pub_date", ""))
                 if pub_year_match:
                     ev_year = pub_year_match.group(0)
+                    log(f"  Extracted date from article publication date: '{ev_year}'")
                     
             
             # For relative dates (no 4-digit year), resolve against article pub_date
@@ -1322,11 +1370,13 @@ def verify_claim_against_evidence(claim_struct, articles):
                 pub_year_match2 = re.search(r'\b(19\d{2}|20\d{2})\b', art.get("pub_date", ""))
                 if pub_year_match2:
                     effective_claim_date = pub_year_match2.group(0)
+                    log(f"  Resolved relative claim date to effective date: '{effective_claim_date}'")
 
             if ev_year and effective_claim_date and not are_dates_compatible(effective_claim_date, ev_year):
                 date_conflict = True
                         
         if date_conflict:
+            log(f"  -> Contradicting: Date mismatch (Claim date: {effective_claim_date}, Evidence date: {ev_year}).")
             art["type"] = "Contradicting"
             contradiction_count += 1
             total_contradiction_score += 1.5 * src_weight
@@ -1349,12 +1399,15 @@ def verify_claim_against_evidence(claim_struct, articles):
         act_ok = action_matches(claim_action, relevant_corpus_lower)
         loc_ok = (not claim_location) or (found_evidence_city and are_locations_equivalent(found_evidence_city, claim_location)) or (not found_evidence_city)
         
+        log(f"  Overlap overlap_ratio: {overlap_ratio:.2%}, sub_ok: {sub_ok}, act_ok: {act_ok}, loc_ok: {loc_ok}")
         if (overlap_ratio >= 0.25 and sub_ok and act_ok and loc_ok) or (overlap_ratio >= 0.35 and act_ok):
+            log("  -> Supporting article found.")
             art["type"] = "Supporting"
             support_count += 1
             total_support_score += 1.0 * src_weight
             supporting_sources.append(art)
         else:
+            log("  -> Neutral: Overlap/compatibility checks failed.")
             art["type"] = "Neutral"
             neutral_count += 1
             
@@ -1534,13 +1587,16 @@ def verify_claim_against_evidence(claim_struct, articles):
             v_reason = "Insufficient evidence."
             expl = "There is insufficient reliable online news coverage to confidently verify or contradict this claim."
             
+    log(f"Aggregation results: support={support_count}, contradiction={contradiction_count}, neutral={neutral_count}")
+    log(f"Final Verdict: '{verdict}' (Confidence: {confidence:.2%}), Reason: {v_reason}")
     return {
         "verdict": verdict,
         "confidence": confidence,
         "explanation": expl,
         "verdict_reason": v_reason,
         "attribute_breakdown": breakdown,
-        "sources": sources
+        "sources": sources,
+        "diagnostics": diagnostic_info
     }
 
 def predict_with_saved_model(text):

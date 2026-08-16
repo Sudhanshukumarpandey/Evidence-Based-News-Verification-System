@@ -41,22 +41,31 @@ def main():
                     # Generate search queries and fetch news articles
                     queries = verifier.generate_queries_for_claim(struct)
                     
+                    diagnostics = []
+                    diagnostics.append(f"🔍 Analyzing Claim: '{claim_text}'")
+                    diagnostics.append(f"Parsed claim structure: {struct}")
+                    diagnostics.append(f"Generated search queries: {queries}")
+                    
                     all_articles = []
                     seen_links = set()
                     
                     for q in queries[:4]:
-                        fetched = verifier.query_google_news(q, limit=5)
+                        fetched = verifier.query_google_news(q, limit=5, diagnostic_info=diagnostics)
                         for art in fetched:
                             if art["link"] not in seen_links:
                                 seen_links.add(art["link"])
                                 all_articles.append(art)
                                 
+                    diagnostics.append(f"Retrieved {len(all_articles)} unique articles from RSS search queries.")
+                    
                     # Deduplicate and rank relevance
                     deduped = verifier.deduplicate_articles(all_articles)
                     ranked = verifier.rank_articles_relevance(struct, deduped)
                     
+                    diagnostics.append(f"After deduplication and relevance ranking, selected top {len(ranked)} articles.")
+                    
                     # Verify claim against evidence
-                    verdict_data = verifier.verify_claim_against_evidence(struct, ranked)
+                    verdict_data = verifier.verify_claim_against_evidence(struct, ranked, diagnostic_info=diagnostics)
                     claim_results.append({
                         "claim": claim_text,
                         "structure": struct,
@@ -183,6 +192,11 @@ def main():
                         else:
                             st.write("No matching news sources found for this statement.")
                             
+                        if "diagnostics" in v_data and v_data["diagnostics"]:
+                            with st.expander("⚙️ View Deployment Diagnostic Info"):
+                                for d_msg in v_data["diagnostics"]:
+                                    st.write(d_msg)
+                                    
                         st.markdown("<br>", unsafe_allow_html=True)
                         
                 st.markdown("---")
